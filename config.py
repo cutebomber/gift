@@ -7,7 +7,7 @@
 BOT_TOKEN = "8633401654:AAFgBoHYSYc5n3hNUT0U67-OtL0Qdr_S6oo"
 
 # 2. Your TON wallet address (open Tonkeeper → copy the address starting with UQ...)
-HOT_WALLET_ADDRESS = "UQBiziX6rkVbYt9u2wDlW75tIaAhT3300UeyFbzYfZtZMKOq"  # ← paste your address here
+HOT_WALLET_ADDRESS = "UQC5Ld-t1YO6ok6vTjo70fH2eQwVRDsPmsvXtgRcNxB32OwQ"  # ← paste your address here
 
 # 3. Network: False = testnet (safe for testing), True = mainnet (real TON)
 #    Get FREE testnet TON at: https://t.me/testgiver_ton_bot
