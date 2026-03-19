@@ -2,9 +2,8 @@
 TON Payment Monitor
 ===================
 - Each order gets a unique 6-digit memo code
-- User sends TON to the bot's hot wallet with this code as the transfer comment
-- This module polls TON Center API every N seconds
-- When a matching payment arrives → calls your on_confirmed callback
+- User sends TON to the bot's hot wallet with this memo as transfer comment
+- Polls TON Center API every N seconds and matches by memo + amount
 """
 
 import time
@@ -17,117 +16,94 @@ import config
 
 logger = logging.getLogger(__name__)
 
-# ── Pending orders ─────────────────────────────────────────────────────────────
-# Structure: { memo: { amount_nano, on_confirmed, on_timeout, timer } }
-_pending = {}
-_pending_lock = threading.Lock()
-
-# ── Last seen transaction logical time (avoids re-processing old txs) ─────────
-_last_lt = None
-
-# ── Hot wallet address cache ───────────────────────────────────────────────────
-_hot_wallet_address = None
+_pending       = {}        # { memo: { amount_nano, on_confirmed, on_timeout, timer } }
+_pending_lock  = threading.Lock()
+_seen_hashes   = set()     # already-processed tx hashes
+_hot_wallet    = None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  Wallet helpers
+#  Wallet address
 # ══════════════════════════════════════════════════════════════════════════════
 
 def get_hot_wallet_address():
-    """Simply reads HOT_WALLET_ADDRESS from config.py — no mnemonic needed."""
-    global _hot_wallet_address
-    if _hot_wallet_address:
-        return _hot_wallet_address
-
+    global _hot_wallet
+    if _hot_wallet:
+        return _hot_wallet
     address = getattr(config, "HOT_WALLET_ADDRESS", "").strip()
-    if not address or address.startswith("UQD..."):
+    if not address or "..." in address:
         raise RuntimeError(
             "HOT_WALLET_ADDRESS is not set in config.py!\n"
             "Open Tonkeeper → copy your wallet address → paste it into config.py"
         )
+    _hot_wallet = address
+    print(f"💎 Hot wallet: {_hot_wallet}")
+    return _hot_wallet
 
-    _hot_wallet_address = address
-    logger.info(f"Hot wallet: {_hot_wallet_address}")
-    return _hot_wallet_address
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  Payment request creation
+#  Helpers
 # ══════════════════════════════════════════════════════════════════════════════
 
 def ton_to_nano(ton: float) -> int:
     return int(ton * 1_000_000_000)
 
-def nano_to_ton(nano: int) -> float:
-    return nano / 1_000_000_000
+def nano_to_ton(nano) -> float:
+    return int(nano) / 1_000_000_000
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Create payment info
+# ══════════════════════════════════════════════════════════════════════════════
 
 def create_payment_info(amount_ton: float) -> dict:
-    """
-    Generate payment details for a new order.
-
-    Returns dict:
-        address     - wallet address to send TON to
-        memo        - 6-digit unique code (must be included as transfer comment)
-        amount_ton  - price in TON
-        amount_nano - price in nanoTON
-        deep_link   - ton:// link that opens Tonkeeper/wallet
-        payment_id  - same as memo (used as key)
-    """
-    address = get_hot_wallet_address()
-    memo = str(random.randint(100_000, 999_999))
+    address    = get_hot_wallet_address()
+    memo       = str(random.randint(100_000, 999_999))
     amount_nano = ton_to_nano(amount_ton)
-    deep_link = (
-        f"ton://transfer/{address}"
-        f"?amount={amount_nano}"
-        f"&text={memo}"
-    )
+    deep_link  = f"ton://transfer/{address}?amount={amount_nano}&text={memo}"
+    print(f"📋 New order created | memo={memo} | amount={amount_ton} TON")
     return {
-        "address":    address,
-        "memo":       memo,
-        "amount_ton": amount_ton,
+        "address":     address,
+        "memo":        memo,
+        "amount_ton":  amount_ton,
         "amount_nano": amount_nano,
-        "deep_link":  deep_link,
-        "payment_id": memo,
+        "deep_link":   deep_link,
+        "payment_id":  memo,
     }
 
 
-def watch_payment(payment_id: str, amount_nano: int,
-                  on_confirmed, on_timeout,
-                  timeout_minutes: int = None):
-    """
-    Register callbacks for a payment.
+# ══════════════════════════════════════════════════════════════════════════════
+#  Watch for payment
+# ══════════════════════════════════════════════════════════════════════════════
 
-    on_confirmed(received_nano, tx_id) — called when payment detected
-    on_timeout()                        — called if timeout expires
-
-    Returns a cancel() function you can call to abort watching.
-    """
+def watch_payment(payment_id, amount_nano, on_confirmed, on_timeout, timeout_minutes=None):
     timeout_sec = (timeout_minutes or config.PAYMENT_TIMEOUT_MINUTES) * 60
 
-    def _timeout_handler():
+    def _on_timeout():
         with _pending_lock:
-            if payment_id in _pending:
-                del _pending[payment_id]
-        logger.info(f"Payment {payment_id} timed out")
+            _pending.pop(payment_id, None)
+        print(f"⏰ Payment timed out: memo={payment_id}")
         on_timeout()
 
-    timer = threading.Timer(timeout_sec, _timeout_handler)
+    timer = threading.Timer(timeout_sec, _on_timeout)
     timer.daemon = True
     timer.start()
 
     with _pending_lock:
         _pending[payment_id] = {
-            "amount_nano": amount_nano,
+            "amount_nano":  amount_nano,
             "on_confirmed": on_confirmed,
-            "on_timeout": on_timeout,
-            "timer": timer,
+            "on_timeout":   on_timeout,
+            "timer":        timer,
         }
+    print(f"👀 Watching for payment | memo={payment_id} | expected={nano_to_ton(amount_nano):.4f} TON | timeout={timeout_sec//60}min")
 
     def cancel():
         with _pending_lock:
             entry = _pending.pop(payment_id, None)
         if entry:
             entry["timer"].cancel()
+        print(f"❌ Payment watch cancelled: memo={payment_id}")
 
     return cancel
 
@@ -137,99 +113,122 @@ def watch_payment(payment_id: str, amount_nano: int,
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _poll_once():
-    global _last_lt
-
     with _pending_lock:
         if not _pending:
             return
+        pending_snapshot = dict(_pending)
 
     try:
         address = get_hot_wallet_address()
     except RuntimeError as e:
-        logger.error(str(e))
+        print(f"❌ Wallet error: {e}")
         return
 
     headers = {}
     if config.TON_API_KEY:
         headers["X-API-Key"] = config.TON_API_KEY
 
-    params = {"address": address, "limit": 20}
-    if _last_lt:
-        params["lt"] = _last_lt
-
     try:
         resp = requests.get(
             f"{config.TON_API_URL}/getTransactions",
-            params=params,
+            params={"address": address, "limit": 20},
             headers=headers,
-            timeout=10,
+            timeout=15,
         )
         data = resp.json()
     except Exception as e:
-        logger.warning(f"TON poll request failed: {e}")
+        print(f"⚠️  TON API request failed: {e}")
         return
 
-    if not data.get("ok") or not data.get("result"):
+    if not data.get("ok"):
+        print(f"⚠️  TON API error: {data.get('description', data)}")
         return
 
-    txs = data["result"]
-
-    # Update pointer so we don't re-process
-    if txs and txs[0].get("transaction_id", {}).get("lt"):
-        _last_lt = txs[0]["transaction_id"]["lt"]
+    txs = data.get("result", [])
+    print(f"🔍 Polled | {len(txs)} txs | {len(pending_snapshot)} pending orders: {list(pending_snapshot.keys())}")
 
     for tx in txs:
-        in_msg = tx.get("in_msg", {})
-        if not in_msg or not in_msg.get("value") or in_msg["value"] == "0":
+        tx_id   = tx.get("transaction_id", {})
+        tx_hash = tx_id.get("hash", "")
+
+        if tx_hash in _seen_hashes:
             continue
 
-        memo = (in_msg.get("message") or "").strip()
-        incoming_nano = int(in_msg["value"])
+        in_msg = tx.get("in_msg") or {}
+        value  = in_msg.get("value", "0") or "0"
 
-        with _pending_lock:
-            order = _pending.get(memo)
+        if value == "0":
+            # outgoing tx, skip
+            _seen_hashes.add(tx_hash)
+            continue
 
+        incoming_nano = int(value)
+
+        # memo can be in "message" or "msg_data" → "text"
+        memo = (
+            in_msg.get("message")
+            or (in_msg.get("msg_data") or {}).get("text")
+            or ""
+        ).strip()
+
+        print(
+            f"   TX: {tx_hash[:16]}... | "
+            f"{nano_to_ton(incoming_nano):.4f} TON | "
+            f"memo='{memo}'"
+        )
+
+        _seen_hashes.add(tx_hash)
+
+        if not memo:
+            print(f"   ↳ No memo — skipping")
+            continue
+
+        order = pending_snapshot.get(memo)
         if not order:
+            print(f"   ↳ Memo '{memo}' not in pending orders — skipping")
             continue
 
-        # Allow ±1% tolerance on amount
-        expected = order["amount_nano"]
-        tolerance = max(expected // 100, 1)
+        # Amount check — 5% tolerance
+        expected  = order["amount_nano"]
+        tolerance = max(expected * 5 // 100, 1)
         if incoming_nano < expected - tolerance:
-            logger.warning(
-                f"Payment {memo}: got {nano_to_ton(incoming_nano):.4f} TON, "
-                f"expected {nano_to_ton(expected):.4f} TON — too low"
+            print(
+                f"   ↳ Amount too low: got {nano_to_ton(incoming_nano):.4f} TON, "
+                f"expected {nano_to_ton(expected):.4f} TON — skipping"
             )
             continue
 
-        tx_id = tx.get("transaction_id", {}).get("hash", "")
-        logger.info(f"✅ Payment confirmed: memo={memo}, amount={nano_to_ton(incoming_nano):.4f} TON")
+        # ✅ Confirmed!
+        print(f"✅ PAYMENT CONFIRMED | memo={memo} | {nano_to_ton(incoming_nano):.4f} TON | tx={tx_hash[:16]}...")
 
         with _pending_lock:
             entry = _pending.pop(memo, None)
 
         if entry:
             entry["timer"].cancel()
-            # Call confirmed callback in a new thread so polling isn't blocked
             threading.Thread(
                 target=entry["on_confirmed"],
-                args=(incoming_nano, tx_id),
+                args=(incoming_nano, tx_hash),
                 daemon=True,
             ).start()
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  Start
+# ══════════════════════════════════════════════════════════════════════════════
+
 def start_poller():
-    """Start the background blockchain polling thread."""
-    network = "MAINNET" if config.TON_MAINNET else "TESTNET"
-    logger.info(f"💎 TON payment poller started ({network}, every {config.POLL_INTERVAL_SECONDS}s)")
+    network = "MAINNET ✅" if config.TON_MAINNET else "TESTNET 🧪"
+    print(f"💎 TON poller starting | {network} | every {config.POLL_INTERVAL_SECONDS}s")
 
     def _loop():
         while True:
             try:
                 _poll_once()
             except Exception as e:
-                logger.error(f"Poller error: {e}")
+                print(f"❌ Poller crash: {e}")
             time.sleep(config.POLL_INTERVAL_SECONDS)
 
     t = threading.Thread(target=_loop, daemon=True)
+    t.daemon = True
     t.start()
