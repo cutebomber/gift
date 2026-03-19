@@ -6,9 +6,8 @@
 # 1. Get this from @BotFather on Telegram → /newbot
 BOT_TOKEN = "8633401654:AAFgBoHYSYc5n3hNUT0U67-OtL0Qdr_S6oo"
 
-# 2. Your TON hot-wallet 24-word mnemonic (dedicated bot wallet, not personal!)
-#    Generate one free at https://tonkeeper.com or @wallet on Telegram
-TON_WALLET_MNEMONIC = "derive faculty vicious liquid license chimney sketch pupil pool dawn need weather stock rebuild flag gospel wall choice stage edit session inhale bitter olive"
+# 2. Your TON wallet address (open Tonkeeper → copy the address starting with UQ...)
+HOT_WALLET_ADDRESS = "UQBiziX6rkVbYt9u2wDlW75tIaAhT3300UeyFbzYfZtZMKOq"  # ← paste your address here
 
 # 3. Network: False = testnet (safe for testing), True = mainnet (real TON)
 #    Get FREE testnet TON at: https://t.me/testgiver_ton_bot
