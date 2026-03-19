@@ -51,14 +51,15 @@ def get_hot_wallet_address():
         )
 
     try:
-        from tonsdk.crypto import mnemonic_to_wallet_key
         from tonsdk.contract.wallet import WalletVersionEnum, Wallets
+        from tonsdk.utils import Address
 
-        _pub, _priv = mnemonic_to_wallet_key(mnemonic.split())
         _wallet, _, _, addr = Wallets.from_mnemonics(
             mnemonic.split(), WalletVersionEnum.v4r2, workchain=0
         )
-        _hot_wallet_address = addr.to_string(True, True, False)
+        # addr is a WalletV4ContractR2 — get address from its .address property
+        raw_addr = _wallet.address
+        _hot_wallet_address = raw_addr.to_string(True, True, False)
         logger.info(f"Hot wallet: {_hot_wallet_address}")
         return _hot_wallet_address
 
