@@ -34,41 +34,21 @@ _hot_wallet_address = None
 # ══════════════════════════════════════════════════════════════════════════════
 
 def get_hot_wallet_address():
-    """
-    Derive the hot wallet address from the mnemonic in config.py.
-    Uses tonsdk if installed, otherwise falls back to TON Center API lookup.
-    Returns address string or raises RuntimeError.
-    """
+    """Simply reads HOT_WALLET_ADDRESS from config.py — no mnemonic needed."""
     global _hot_wallet_address
     if _hot_wallet_address:
         return _hot_wallet_address
 
-    mnemonic = config.TON_WALLET_MNEMONIC.strip()
-    if not mnemonic or mnemonic.startswith("word1"):
+    address = getattr(config, "HOT_WALLET_ADDRESS", "").strip()
+    if not address or address.startswith("UQD..."):
         raise RuntimeError(
-            "TON_WALLET_MNEMONIC is not set in config.py!\n"
-            "Generate a wallet at https://tonkeeper.com and paste the 24 words."
+            "HOT_WALLET_ADDRESS is not set in config.py!\n"
+            "Open Tonkeeper → copy your wallet address → paste it into config.py"
         )
 
-    try:
-        from tonsdk.contract.wallet import WalletVersionEnum, Wallets
-        from tonsdk.utils import Address
-
-        _wallet, _, _, addr = Wallets.from_mnemonics(
-            mnemonic.split(), WalletVersionEnum.v4r2, workchain=0
-        )
-        # addr is a WalletV4ContractR2 — get address from its .address property
-        raw_addr = _wallet.address
-        _hot_wallet_address = raw_addr.to_string(True, True, False)
-        logger.info(f"Hot wallet: {_hot_wallet_address}")
-        return _hot_wallet_address
-
-    except ImportError:
-        raise RuntimeError(
-            "tonsdk not installed. Run:  pip install tonsdk\n"
-            "Or manually paste your wallet address as HOT_WALLET_ADDRESS in config.py"
-        )
-
+    _hot_wallet_address = address
+    logger.info(f"Hot wallet: {_hot_wallet_address}")
+    return _hot_wallet_address
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  Payment request creation
